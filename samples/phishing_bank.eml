@@ -1,0 +1,67 @@
+Return-Path: <support@novabank.example>
+Received: from mx.example.com (mx.example.com [192.0.2.10]) by
+ inbox.example.com (Postfix) with ESMTPS id 4R7XQ2; Mon, 02 Nov 2026 09:14:05
+ +0400
+Authentication-Results: mx.example.com; spf=fail (mx.example.com: domain of
+ support@novabank.example does not designate 203.0.113.45 as permitted sender)
+ smtp.mailfrom=support@novabank.example; dkim=none (message not signed);
+ dmarc=fail (p=REJECT sp=REJECT dis=NONE) header.from=novabank.example
+Received: from vps-4471.cheap-hosting.example (vps-4471.cheap-hosting.example
+ [203.0.113.45]) by mx.example.com (Postfix) with ESMTP id 8F2A1C; Mon, 02 Nov
+ 2026 09:14:02 +0400
+From: NovaBank =?utf-8?q?D=C9=99st=C9=99k?= <support@novabank.example>
+Reply-To:
+ NovaBank =?utf-8?q?D=C9=99st=C9=99k?= <help@novabank-support.example>
+To: user@example.com
+Subject: =?utf-8?b?VMmZY2lsaTogSGVzYWLEsW7EsXogbcO8dsmZcXHJmXRpIGJsb2tsYW4=?=
+ =?utf-8?q?=C4=B1b?=
+Date: Mon, 02 Nov 2026 09:13:58 +0400
+Message-ID: <20261102091358.4471@vps-4471.cheap-hosting.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============7080086916149982551=="
+
+--===============7080086916149982551==
+Content-Type: multipart/alternative;
+ boundary="===============3970164418121492428=="
+
+--===============3970164418121492428==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: base64
+
+SMO2cm3JmXRsaSBtw7zFn3TJmXJpLAoKSGVzYWLEsW7EsXpkYSDFn8O8YmjJmWxpIGbJmWFsaXl5
+yZl0IGHFn2thciBlZGlsZGkgdsmZIHTJmWhsw7xryZlzaXpsaWsgbcmZcXPJmWRpbMmZIGhlc2Fi
+xLFuxLF6IG3DvHbJmXFxyZl0aSBibG9rbGFuxLFiLgoKS2FydMSxbsSxesSxbiB0YW0gYmxva2xh
+bm1hbWFzxLEgw7zDp8O8biAyNCBzYWF0IMmZcnppbmTJmSBoZXNhYsSxbsSxesSxIHTJmXNkaXEg
+ZWRpbjoKaHR0cDovLzIwMy4wLjExMy40NS9ub3ZhYmFuay92ZXJpZnkKClTJmXNkaXEgZXRtyZlz
+yZluaXosIGthcnTEsW7EsXogYmlyZMmZZsmZbGlrIGJhxJ9sYW5hY2FxLgoKSMO2cm3JmXRsyZks
+Ck5vdmFCYW5rIETJmXN0yZlrIFhpZG3JmXRpCg==
+
+--===============3970164418121492428==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: base64
+MIME-Version: 1.0
+
+PGh0bWw+Cjxib2R5IHN0eWxlPSJmb250LWZhbWlseTogQXJpYWwsIHNhbnMtc2VyaWYiPgo8cD5I
+w7ZybcmZdGxpIG3DvMWfdMmZcmksPC9wPgo8cD5IZXNhYsSxbsSxemRhIDxiPsWfw7xiaMmZbGkg
+ZsmZYWxpeXnJmXQ8L2I+IGHFn2thciBlZGlsZGkgdsmZIHTJmWhsw7xryZlzaXpsaWsgbcmZcXPJ
+mWRpbMmZIGhlc2FixLFuxLF6IG3DvHbJmXFxyZl0aSBibG9rbGFuxLFiLjwvcD4KPHA+S2FydMSx
+bsSxesSxbiB0YW0gYmxva2xhbm1hbWFzxLEgw7zDp8O8biA8Yj4yNCBzYWF0PC9iPiDJmXJ6aW5k
+yZkga2FydCBtyZlsdW1hdGxhcsSxbsSxesSxIHllbmlsyZl5aW4gdsmZIGhlc2FixLFuxLF6xLEg
+dMmZc2RpcSBlZGluOjwvcD4KPHA+PGEgaHJlZj0iaHR0cDovL24wdmFiYW5rLmV4YW1wbGUvbG9n
+aW4ucGhwP3Nlc3Npb249ODgxMiI+aHR0cHM6Ly9ub3ZhYmFuay5leGFtcGxlL2hlc2FiaW08L2E+
+PC9wPgo8cD7Gj3RyYWZsxLEgbcmZbHVtYXQgyZlsYXbJmSBvbHVubXXFnyBzyZluyZlkZMmZZGly
+LjwvcD4KPHA+SMO2cm3JmXRsyZksPGJyPk5vdmFCYW5rIETJmXN0yZlrIFhpZG3JmXRpPC9wPgo8
+L2JvZHk+CjwvaHRtbD4K
+
+--===============3970164418121492428==--
+
+--===============7080086916149982551==
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="Hesab_melumati.pdf.exe"
+MIME-Version: 1.0
+
+VGhpcyBpcyBOT1QgYSByZWFsIHByb2dyYW0uIEhhcm1sZXNzIHRlc3QgZmlsZSBmb3IgcGhpc2hp
+bmctZW1haWwtYW5hbHl6ZXIuCg==
+
+--===============7080086916149982551==--

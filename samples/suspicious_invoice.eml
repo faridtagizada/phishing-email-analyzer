@@ -1,0 +1,44 @@
+Return-Path: <bounce-7781@mail.sendfast.example>
+Received: from mail.sendfast.example (mail.sendfast.example [198.51.100.23])
+ by mx.example.com (Postfix) with ESMTPS id 1C9D33; Wed, 04 Nov 2026 14:20:15
+ +0000
+Authentication-Results: mx.example.com; spf=pass
+ smtp.mailfrom=mail.sendfast.example; dkim=pass header.d=quickinvoice.example;
+ dmarc=pass header.from=quickinvoice.example
+From: Accounts Team <billing@quickinvoice.example>
+To: user@example.com
+Subject: Invoice #0425 - payment overdue
+Date: Wed, 04 Nov 2026 14:20:11 +0000
+Message-ID: <0425.1793888411@quickinvoice.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============7945732828769276345=="
+
+--===============7945732828769276345==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hello,
+
+Your invoice #0425 is attached. The payment is overdue, please pay within 24 =
+hours
+to avoid a late fee. This is the final notice.
+
+You can also view the invoice online: https://quickinvoice.example/invoices/0=
+425
+
+Thanks,
+Accounts Team
+
+--===============7945732828769276345==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="Invoice_0425.html"
+MIME-Version: 1.0
+
+<html><body>
+<h2>Invoice #0425</h2>
+<p>Amount due: 450 AZN</p>
+<p>(harmless sample file for phishing-email-analyzer)</p>
+</body></html>
+
+--===============7945732828769276345==--

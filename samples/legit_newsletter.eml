@@ -1,0 +1,49 @@
+Return-Path: <bounces@ctfclub.example>
+Received: from mail.ctfclub.example (mail.ctfclub.example [198.51.100.80]) by
+ mx.example.com (Postfix) with ESMTPS id 77AB01; Thu, 05 Nov 2026 18:02:44
+ +0400
+Authentication-Results: mx.example.com; spf=pass
+ smtp.mailfrom=ctfclub.example; dkim=pass header.d=ctfclub.example; dmarc=pass
+ header.from=ctfclub.example
+From: CTF Club <news@ctfclub.example>
+To: user@example.com
+Subject: Next week: beginner CTF night
+Date: Thu, 05 Nov 2026 18:02:40 +0400
+Message-ID: <weekly-45@ctfclub.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="===============0667276418335505850=="
+
+--===============0667276418335505850==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hi everyone!
+
+Next Thursday we're doing a beginner friendly CTF night: web, crypto and a bi=
+t of forensics.
+Bring your laptop, we'll have tea and pizza.
+
+Details and registration: https://ctfclub.example/events/ctf-night
+
+You get this email because you joined the CTF Club mailing list.
+Unsubscribe: https://ctfclub.example/unsubscribe
+
+--===============0667276418335505850==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><body>
+<p>Hi everyone!</p>
+<p>Next Thursday we're doing a beginner friendly CTF night: web, crypto and a=
+ bit of forensics.
+Bring your laptop, we'll have tea and pizza.</p>
+<p>Details and registration: <a href=3D"https://ctfclub.example/events/ctf-ni=
+ght">ctfclub.example/events/ctf-night</a></p>
+<p style=3D"font-size: small">You get this email because you joined the CTF C=
+lub mailing list.
+<a href=3D"https://ctfclub.example/unsubscribe">Unsubscribe</a></p>
+</body></html>
+
+--===============0667276418335505850==--

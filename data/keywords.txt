@@ -1,0 +1,41 @@
+# Pressure and bait words that show up a lot in phishing.
+# One per line. Matching ignores upper/lower case (and the İ/ı problem).
+# Short pieces like "bloklan" catch "bloklanıb", "bloklanacaq" etc.
+
+# --- Azerbaijani ---
+təcili
+dərhal
+bloklan
+dondurul
+təsdiq edin
+təsdiqləyin
+məlumatlarınızı yeniləyin
+kart məlumat
+şifrənizi
+24 saat
+son xəbərdarlıq
+şübhəli fəaliyyət
+uduş
+hədiyyə qazandınız
+bağlamanız
+çatdırılma haqqı
+cərimə
+
+# --- English ---
+urgent
+immediately
+verify your account
+confirm your identity
+account suspended
+account has been locked
+unusual activity
+suspicious activity
+update your payment
+reset your password
+invoice
+payment overdue
+final notice
+gift card
+you have won
+within 24 hours
+click here

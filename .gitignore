@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# real emails and reports I check - these must never go to GitHub
+private/
+reports/
+*.json

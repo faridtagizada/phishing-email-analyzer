@@ -1,0 +1,31 @@
+# Real domains of brands that scammers like to copy.
+# The analyzer warns when a domain LOOKS like one of these but isn't.
+# Add your own (your bank, your university ...), one per line.
+
+# the fake bank from my sample emails
+novabank.example
+
+# my university
+aztu.edu.az
+
+# Azerbaijan
+kapitalbank.az
+birbank.az
+abb-bank.az
+pashabank.az
+leobank.az
+e-gov.az
+azercell.com
+bakcell.com
+azerpost.az
+
+# global
+paypal.com
+microsoft.com
+apple.com
+google.com
+facebook.com
+instagram.com
+amazon.com
+netflix.com
+dhl.com
