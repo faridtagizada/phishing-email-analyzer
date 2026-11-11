@@ -29,3 +29,13 @@ instagram.com
 amazon.com
 netflix.com
 dhl.com
+
+# mail and login domains that really belong to the brands above
+# (without them a normal Facebook notification looks like a look-alike)
+facebookmail.com
+microsoftonline.com
+amazonses.com
+amazonaws.com
+googlemail.com
+googleusercontent.com
+paypalobjects.com

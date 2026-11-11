@@ -9,6 +9,7 @@ At the end the points of all findings are added up to get the score.
 import hashlib
 import ipaddress
 import re
+import socket
 from email.utils import parseaddr
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
@@ -43,12 +44,15 @@ CHEAP_TLDS = {
 # endings where the real domain has 3 parts, e.g. aztu.edu.az
 TWO_PART_SUFFIXES = {
     "com.az", "net.az", "org.az", "gov.az", "edu.az", "info.az", "biz.az",
-    "co.uk", "org.uk", "ac.uk", "com.tr", "gov.tr", "edu.tr", "com.ru",
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "com.tr", "gov.tr", "edu.tr", "com.ru",
+    "co.jp", "ne.jp", "or.jp", "com.au", "net.au", "org.au", "co.nz", "co.za",
+    "co.in", "co.kr", "co.il", "com.br", "com.cn", "com.mx", "com.ua", "com.sg", "com.hk",
 }
 
 DANGEROUS_EXT = {
     ".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".js", ".jse", ".vbs",
     ".vbe", ".wsf", ".hta", ".ps1", ".lnk", ".msi", ".jar", ".cpl", ".reg",
+    ".dll", ".sys", ".ocx",
 }
 MACRO_EXT = {".docm", ".xlsm", ".pptm", ".dotm", ".xlam"}
 WEBPAGE_EXT = {".html", ".htm", ".shtml", ".svg"}
@@ -66,7 +70,14 @@ FAIL_REASONS = {
     "dmarc": "the From domain isn't backed by SPF/DKIM, typical for spoofing",
 }
 
-URL_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
+# the first alternative keeps the closing "]" of an IPv6 host: http://[2001:db8::1]/login
+URL_RE = re.compile(r"https?://(?:\[[0-9a-f:.%]+\][^\s<>\"')\]]*|[^\s<>\"')\]]+)", re.IGNORECASE)
+
+# addresses that only exist inside a network: never the place a mail really came from
+INTERNAL_NETS = [ipaddress.ip_network(net) for net in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",
+    "::1/128", "fc00::/7", "fe80::/10",
+)]
 
 
 # ---------------------------------------------------------------- helpers
@@ -93,7 +104,9 @@ def normalize(text):
     # into a plain "i". The keywords go through the same function, so both
     # sides still match.
     text = text.replace("İ", "i").replace("I", "i").lower()
-    return text.replace("ı", "i").replace("̇", "")
+    text = text.replace("ı", "i").replace("̇", "")
+    # "verify your\naccount" must still match the keyword "verify your account"
+    return " ".join(text.split())
 
 
 def get_domain(address):
@@ -119,7 +132,38 @@ def is_ip(host):
         ipaddress.ip_address(host)
         return True
     except ValueError:
+        pass
+    # Browsers also open an IPv4 address written as one number, in hex or in octal:
+    # http://3405803785/ and http://0xcb.0.0x71.5/ are both 203.0.113.5
+    host = host or ""
+    if re.fullmatch(r"[0-9a-fx.]+", host, re.IGNORECASE) and re.search(r"\d", host):
+        try:
+            socket.inet_aton(host)
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def is_internal_ip(text):
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
         return False
+    return any(ip in net for net in INTERNAL_NETS if net.version == ip.version)
+
+
+def defang_ip(ip):
+    return ip.replace(".", "[.]").replace(":", "[:]")
+
+
+def safe_split(url):
+    # urlsplit() raises ValueError for things like "http://[::1" (broken IPv6 brackets).
+    # One broken link must not stop the whole analysis, so callers get None instead.
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
 
 
 def levenshtein(a, b):
@@ -145,11 +189,16 @@ def unswap(label):
 def defang(url):
     # hxxp://evil[.]example/... can be pasted into a chat or a ticket
     # without turning into a clickable link
-    parts = urlsplit(url)
-    if not parts.netloc:
+    url = "".join(ch for ch in url if ch not in "\t\r\n")   # urlsplit() drops these as well
+    parts = safe_split(url)
+    if parts is not None and not parts.netloc:
         return url
+    if parts is None or parts.netloc not in url:
+        return re.sub(r"(?i)http", "hxxp", url).replace(".", "[.]")
     scheme = parts.scheme.replace("http", "hxxp")
     rest = url.split(parts.netloc, 1)[1]
+    # a second address in the path or query (?u=http://other.example) must not stay clickable either
+    rest = re.sub(r"(?i)http(s?)://", r"hxxp\1://", rest)
     return f"{scheme}://{parts.netloc.replace('.', '[.]')}{rest}"
 
 
@@ -162,43 +211,70 @@ def decode_punycode(host):
 
 # ---------------------------------------------------------------- domains
 
+def contains_brand(name, brand):
+    # "paypal-login" and "securepaypal" both use the brand. A short brand has to stand on its own,
+    # otherwise "pineapple" would count as an Apple look-alike.
+    if brand not in name:
+        return False
+    if len(brand) >= 6:
+        return True
+    return re.search(rf"(^|[^a-z]){re.escape(brand)}([^a-z]|$)", name) is not None
+
+
 def check_lookalike(host, trusted):
     # Is this domain pretending to be one of the real ones in trusted_domains.txt?
     if not host or is_ip(host):
         return None
+    host = host.lower().strip(".")
     domain = base_domain(host)
     if domain in trusted:
         return None
     name = domain.split(".")[0]
+    # paypal.com.secure-login.example: the trusted name is only a subdomain, the owner is the last part
+    subdomains = host[:-len(domain)].strip(".")
+    if subdomains:
+        for real in sorted(trusted):
+            if subdomains == real or subdomains.startswith(real + ".") or subdomains.endswith("." + real):
+                return finding(3, "domains", f"{host} starts with {real}, but it really belongs to {domain}")
     for real in sorted(trusted):
         real_name = real.split(".")[0]
         if name == real_name:
             continue  # same name with another ending (.com / .az), can't tell
         if unswap(name) == unswap(real_name):
             return finding(3, "domains", f"{domain} imitates {real} (look-alike characters)")
-        if len(real_name) >= 5 and levenshtein(name, real_name) <= 2:
-            return finding(3, "domains", f"{domain} is only {levenshtein(name, real_name)} letter(s) away from {real}")
+        # two typos are a lot for a short name (moodle is 2 letters away from google), so those get 1
+        distance = levenshtein(name, real_name)
+        if len(real_name) >= 5 and distance <= (2 if len(real_name) >= 8 else 1):
+            return finding(3, "domains", f"{domain} is only {distance} letter(s) away from {real}")
         # unswap here too, so micros0ft-login.com is caught as well
-        if len(real_name) >= 4 and unswap(real_name) in unswap(name):
+        if len(real_name) >= 4 and contains_brand(unswap(name), unswap(real_name)):
             return finding(2, "domains", f"{domain} uses the name '{real_name}' but it is not {real}")
     return None
 
 
 # ---------------------------------------------------------------- headers
 
-def check_auth(msg):
+def check_auth(msg, authserv_id=None):
     # The receiving mail server writes its SPF / DKIM / DMARC verdict into
     # Authentication-Results. Careful: a sender can add a fake one too, so only
-    # the TOP one (added by your own mail server) should be trusted.
+    # the TOP one (added by your own mail server) should be trusted. If your server
+    # doesn't add one, the top one IS the sender's: pass authserv_id (the name your
+    # server puts at the start of the header) and every other header is ignored.
     results = {"spf": "missing", "dkim": "missing", "dmarc": "missing"}
-    headers = msg.get_all("Authentication-Results") or []
+    headers = [str(h) for h in (msg.get_all("Authentication-Results") or [])]
+    ignored = 0
+    if authserv_id:
+        wanted = authserv_id.strip().lower()
+        own = [h for h in headers if h.split(";", 1)[0].strip().lower().split()[:1] == [wanted]]
+        ignored = len(headers) - len(own)
+        headers = own
     if headers:
-        top = str(headers[0])
+        top = headers[0]
         for name in results:
             match = re.search(rf"\b{name}=(\w+)", top, re.IGNORECASE)
             if match:
                 results[name] = match.group(1).lower()
-    if results["spf"] == "missing" and msg.get("Received-SPF"):
+    if results["spf"] == "missing" and msg.get("Received-SPF") and not authserv_id:
         results["spf"] = str(msg["Received-SPF"]).split()[0].lower()
 
     findings = []
@@ -208,7 +284,9 @@ def check_auth(msg):
             findings.append(finding(2, "auth", f"{label} = {result}: {FAIL_REASONS[name]}"))
         elif result in ("softfail", "neutral", "none"):
             findings.append(finding(1, "auth", f"{label} = {result}: doesn't prove who the sender is"))
-    if not headers and not msg.get("Received-SPF"):
+    if ignored:
+        findings.append(finding(0, "auth", f"Ignored {ignored} Authentication-Results header(s) not written by {authserv_id}"))
+    if not headers and (authserv_id or not msg.get("Received-SPF")):
         findings.append(finding(0, "auth", "No Authentication-Results header, can't tell if SPF/DKIM/DMARC passed"))
     return results, findings
 
@@ -220,6 +298,9 @@ def check_sender(msg, trusted):
     from_domain = get_domain(from_header)
     name_norm = normalize(name)
 
+    if not from_domain:
+        findings.append(finding(1, "sender", "No usable From address (the header is missing or broken)"))
+
     # "support@kapitalbank.az" <random@evil.example>: the name is a fake address
     if "@" in name and name.strip().lower() != address.lower():
         findings.append(finding(3, "sender", f"Display name pretends to be '{name.strip()}', the real address is {address}"))
@@ -230,20 +311,25 @@ def check_sender(msg, trusted):
 
     # the name mentions a brand from my trusted list, but the domain is something else
     squeezed = name_norm.replace(" ", "").replace("-", "")
+    sender_base = base_domain(from_domain)
     for real in sorted(trusted):
         brand = normalize(real.split(".")[0]).replace("-", "")
-        if len(brand) >= 4 and brand in squeezed and base_domain(from_domain) != real:
-            findings.append(finding(2, "sender", f"The name says '{name}' but the mail doesn't come from {real}"))
-            break
+        if len(brand) < 4 or brand not in squeezed:
+            continue
+        # one of the trusted domains, or the same name under another ending (amazon.co.uk), is not a mismatch
+        if sender_base in trusted or sender_base.split(".")[0] == real.split(".")[0]:
+            continue
+        findings.append(finding(2, "sender", f"The name says '{name}' but the mail doesn't come from {real}"))
+        break
 
     # replies would go somewhere else than the sender
     reply_domain = get_domain(str(msg.get("Reply-To", "") or ""))
-    if reply_domain and base_domain(reply_domain) != base_domain(from_domain):
+    if reply_domain and from_domain and base_domain(reply_domain) != base_domain(from_domain):
         findings.append(finding(2, "sender", f"Reply-To goes to {reply_domain}, not to {from_domain}"))
 
     # bounce address on another domain. Newsletters do this too, so only 1 point
     bounce_domain = get_domain(str(msg.get("Return-Path", "") or ""))
-    if bounce_domain and base_domain(bounce_domain) != base_domain(from_domain):
+    if bounce_domain and from_domain and base_domain(bounce_domain) != base_domain(from_domain):
         findings.append(finding(1, "sender", f"Return-Path is on {bounce_domain}, not on {from_domain}"))
 
     # the Message-ID is usually made by the sender's own mail server
@@ -262,11 +348,17 @@ def parse_received(msg):
         text = " ".join(str(header).split())
         sender = re.search(r"\bfrom\s+(\S+)", text)
         receiver = re.search(r"\bby\s+(\S+)", text)
-        ip = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3})\]", text)
+        ip = ""
+        for candidate in re.findall(r"\[(?:IPv6:)?([0-9A-Fa-f:.]+)\]", text):
+            try:
+                ip = str(ipaddress.ip_address(candidate))     # IPv4 or IPv6
+                break
+            except ValueError:
+                continue
         hops.append({
             "from": sender.group(1) if sender else "?",
             "by": receiver.group(1) if receiver else "?",
-            "ip": ip.group(1) if ip else "",
+            "ip": ip,
         })
     return hops
 
@@ -289,15 +381,33 @@ class LinkCollector(HTMLParser):
         if tag in ("style", "script"):
             self.skip = True
         elif tag == "a":
+            self.close_link(closed=False)   # an <a> that was never closed still counts
             self.href = dict(attrs).get("href")
             self.link_text = []
+        elif tag in ("area", "form"):
+            # image maps and forms send the reader somewhere too
+            target = dict(attrs).get("href" if tag == "area" else "action")
+            if target:
+                self.links.append((target.strip(), ""))
 
     def handle_endtag(self, tag):
         if tag in ("style", "script"):
             self.skip = False
-        elif tag == "a" and self.href is not None:
-            self.links.append((self.href.strip(), "".join(self.link_text).strip()))
-            self.href = None
+        elif tag == "a":
+            self.close_link(closed=True)
+
+    def close_link(self, closed):
+        if self.href is None:
+            return
+        # Without a </a> nobody knows where the link text ends, so only the first piece is used.
+        # Otherwise an unclosed <a> would swallow the rest of the mail as its "text".
+        pieces = self.link_text if closed else self.link_text[:1]
+        self.links.append((self.href.strip(), "".join(pieces).strip()))
+        self.href = None
+
+    def close(self):
+        super().close()
+        self.close_link(closed=False)       # the mail ended while an <a> was still open
 
     def handle_data(self, data):
         if self.skip:
@@ -333,14 +443,24 @@ def extract_links(plain, html):
     collector = LinkCollector()
     if html:
         collector.feed(html)
+        collector.close()
     for href, text in collector.links:
+        href = "".join(ch for ch in href if ch not in "\t\r\n")
+        if href.startswith("//"):
+            href = "https:" + href      # protocol-relative link, the browser fills in the scheme
         if href.lower().startswith(("http://", "https://")):
             links.append({"url": href, "text": text})
-    for url in URL_RE.findall(plain):
-        url = url.rstrip(".,;:!?")
-        if not any(link["url"] == url for link in links):
-            links.append({"url": url, "text": ""})
-    return links, " ".join(collector.text)
+    html_text = " ".join(collector.text)
+    shown = [text for _, text in collector.links if text]
+    for source in (plain, html_text):
+        for url in URL_RE.findall(source):
+            url = url.rstrip(".,;:!?")
+            # an address that is only the visible text of a link is not a link of its own
+            if source is html_text and any(url in text for text in shown):
+                continue
+            if not any(link["url"] == url for link in links):
+                links.append({"url": url, "text": ""})
+    return links, html_text
 
 
 def host_in_text(text):
@@ -348,6 +468,9 @@ def host_in_text(text):
     # "https://novabank.example/hesabim" -> "novabank.example", "Click here" -> None
     text = text.strip().lower()
     match = re.match(r"^(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/:?#]|$)", text)
+    if not match:
+        # "Visit https://bank.example now": the address is somewhere inside the text
+        match = re.search(r"(?:https?://|www\.)((?:[a-z0-9-]+\.)+[a-z]{2,})", text)
     return match.group(1) if match else None
 
 
@@ -357,7 +480,10 @@ def check_links(links, trusted):
     plain_http = False
     for link in links:
         url = link["url"]
-        parts = urlsplit(url)
+        parts = safe_split(url)
+        if parts is None:
+            findings.append(finding(2, "links", f"Broken link that can't be parsed (sometimes done on purpose): {defang(url)}"))
+            continue
         host = (parts.hostname or "").lower()
         if not host:
             continue
@@ -422,7 +548,8 @@ def get_attachments(msg):
 def check_attachments(files):
     findings = []
     for f in files:
-        pieces = f["name"].lower().strip().split(".")
+        # Windows drops trailing dots and spaces, so "invoice.exe." is saved as invoice.exe
+        pieces = f["name"].lower().strip().rstrip(". ").split(".")
         ext = "." + pieces[-1] if len(pieces) > 1 else ""
         ext_before = "." + pieces[-2] if len(pieces) > 2 else ""
 
