@@ -48,9 +48,12 @@ Needs Python 3.8 or newer (use `python3` on Linux).
 
 ```bash
 python phish_analyzer.py samples/*.eml                # several files + a summary
-python phish_analyzer.py mail.eml --json report.json  # save the result as JSON
+python phish_analyzer.py mail.eml --json report.json  # save the result as JSON (always a list, one item per file)
+python phish_analyzer.py mail.eml --authserv-id mx.example.com   # only trust your own server's Authentication-Results
 python phish_analyzer.py mail.eml --no-color          # plain text output
 ```
+
+The exit code is 0 when every file was analyzed and 1 when one of them could not be read or analyzed. The other files are still processed, so one broken mail doesn't stop a batch.
 
 To check one of your own emails you need it as an `.eml` file:
 - **Gmail:** open the mail, then ⋮ → *Download message*
@@ -177,7 +180,7 @@ The free API allows 4 lookups per minute, so with several attachments the tool w
 ## Tests
 
 ```bash
-python -m unittest discover tests -v
+python -m unittest discover tests -v     # 36 tests
 ```
 
 The VirusTotal tests don't use the internet, they fake the answer with `unittest.mock`.
@@ -185,7 +188,7 @@ The VirusTotal tests don't use the internet, they fake the answer with `unittest
 ## Things I learned along the way
 
 - **`Received` headers are upside down.** Every server adds its line on top, so the *last* `Received` header is where the mail actually started.
-- **`Authentication-Results` can be faked.** A sender can put their own header with `spf=pass` into the mail. Only the one your own mail server adds (the top one) counts, so the tool reads only that one.
+- **`Authentication-Results` can be faked.** A sender can put their own header with `spf=pass` into the mail. Only the one your own mail server adds (the top one) counts, so the tool reads only that one. If your server doesn't add one at all, the top header is the sender's: pass `--authserv-id` with the name your server writes at the start of the header, and every other header is ignored.
 - **Passing SPF/DKIM/DMARC doesn't mean the mail is safe.** In `suspicious_invoice.eml` all three pass, because the scammer set them up for their own domain. They only prove the mail really comes from that domain, not that the domain is honest.
 - **Python and the Azerbaijani "İ".** `"İ".lower()` gives `i` plus an invisible combining dot (2 characters), and `"I".lower()` gives `i` instead of `ı`. So without a fix, `HESABINIZ` wouldn't match `hesabınız` in the keyword list. `normalize()` in `checks.py` turns every i-like letter into a plain `i` on both sides before comparing.
 - **The text of a link means nothing.** `<a href="http://evil.example">https://mybank.az</a>` shows the bank's address but goes somewhere else. That's why the tool compares the two.
@@ -198,6 +201,7 @@ The VirusTotal tests don't use the internet, they fake the answer with `unittest
 - It doesn't open links or check their reputation, on purpose. Only attachment hashes go to VirusTotal.
 - It can't read `.msg` (Outlook) files or text inside images (QR code phishing).
 - An attacker can simply avoid the words in my keyword list.
+- The origin IP in the IOC list is the first public address in the `Received` chain. A sender can add fake `Received` lines below the real ones, so treat it as a lead, not as proof.
 - It's a learning project, not a replacement for a real mail gateway or a SOC analyst.
 
 ## Ideas for later
