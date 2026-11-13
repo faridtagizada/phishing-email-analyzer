@@ -10,14 +10,42 @@ environment variable. The free API allows 4 lookups per minute.
 """
 
 import json
+import time
 import urllib.error
 import urllib.request
 
 API_URL = "https://www.virustotal.com/api/v3/files/"
 
+# The free API allows 4 lookups per minute, so there must be 15 seconds
+# between two lookups. The wait is kept here for the whole run, so it also
+# works when several emails are checked one after another.
+MIN_INTERVAL = 15
+_last_lookup = None
+# The same file attached to several emails is only looked up once
+_cache = {}
+
+
+def _wait_for_turn():
+    global _last_lookup
+    if _last_lookup is not None:
+        wait = MIN_INTERVAL - (time.monotonic() - _last_lookup)
+        if wait > 0:
+            time.sleep(wait)
+    _last_lookup = time.monotonic()
+
 
 def lookup_hash(sha256, api_key, timeout=15):
     # returns e.g. {"status": "found", "malicious": 12, "suspicious": 1, "total": 70}
+    if sha256 in _cache:
+        return dict(_cache[sha256])
+    _wait_for_turn()
+    result = _query(sha256, api_key, timeout)
+    if result["status"] != "error":  # errors (no internet, 429 ...) can be tried again
+        _cache[sha256] = result
+    return dict(result)
+
+
+def _query(sha256, api_key, timeout):
     request = urllib.request.Request(API_URL + sha256, headers={"x-apikey": api_key})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

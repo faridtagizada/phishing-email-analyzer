@@ -16,11 +16,9 @@ import glob
 import json
 import os
 import sys
-import time
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
-from urllib.parse import urlsplit
 
 import checks
 import virustotal
@@ -77,9 +75,9 @@ def analyze(path, keywords, trusted, vt_key=None):
     files = checks.get_attachments(msg)
     findings += checks.check_attachments(files)
     if vt_key:
-        for i, f in enumerate(files):
-            if i > 0:
-                time.sleep(15)  # free API: 4 requests per minute
+        for f in files:
+            # virustotal.py waits between lookups itself (free API: 4 per minute),
+            # also across several emails, and looks up each file only once
             f["virustotal"] = virustotal.lookup_hash(f["sha256"], vt_key)
             vt = f["virustotal"]
             if vt["status"] == "found" and vt["malicious"] > 0:
@@ -101,11 +99,11 @@ def analyze(path, keywords, trusted, vt_key=None):
     report["findings"] = unique
     report["score"] = sum(item["points"] for item in unique)
     report["verdict"], report["advice"] = verdict(report["score"])
-    report["iocs"] = collect_iocs(report)
+    report["iocs"] = collect_iocs(report, trusted)
     return report
 
 
-def collect_iocs(report):
+def collect_iocs(report, trusted=()):
     # everything an analyst would copy into a ticket, defanged
     iocs = {"email": [], "ip": [], "domain": [], "url": [], "sha256": []}
 
@@ -120,7 +118,12 @@ def collect_iocs(report):
     if report["route"] and report["route"][0]["ip"]:
         add("ip", report["route"][0]["ip"].replace(".", "[.]"))  # first server = where it came from
     for link in report["links"]:
-        host = (urlsplit(link["url"]).hostname or "").lower()
+        parts = checks.split_url(link["url"])
+        host = ((parts.hostname if parts else None) or "").lower()
+        # Scammers link to the real bank's site too, to look legit. That site is
+        # not an IOC: putting it on a blocklist would block the real bank.
+        if host and checks.base_domain(host) in trusted:
+            continue
         if checks.is_ip(host):
             add("ip", host.replace(".", "[.]"))
         elif host:
@@ -238,6 +241,9 @@ def main():
             report = analyze(path, keywords, trusted, vt_key)
         except OSError as e:
             print(f"[!] Can't read {path}: {e}")
+            continue
+        except Exception as e:  # a crafted email must not stop the other files
+            print(f"[!] Can't analyze {path}: {type(e).__name__}: {e}")
             continue
         print_report(report, use_color)
         reports.append(report)
