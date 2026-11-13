@@ -8,6 +8,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 from email import policy
@@ -94,6 +95,29 @@ class TestLinks(unittest.TestCase):
         links, _ = checks.extract_links("", '<a href="https://kapitalbank.az/x">Click here</a>')
         self.assertEqual(checks.check_links(links, TRUSTED), [])
 
+    def test_file_name_is_not_a_domain(self):
+        # "Report.pdf" is what the reader sees, not a site the link pretends to be
+        html = '<a href="https://files.kapitalbank.az/r/1">Report.pdf</a> <a href="https://kapitalbank.az/">index.html</a>'
+        links, _ = checks.extract_links("", html)
+        self.assertEqual(checks.check_links(links, TRUSTED), [])
+        # a real address in the text is still compared
+        links, _ = checks.extract_links("", '<a href="http://evil.example/">www.kapitalbank.az</a>')
+        self.assertTrue(any("really goes to evil.example" in f["text"] for f in checks.check_links(links, TRUSTED)))
+
+    def test_unclosed_and_nested_links_are_not_lost(self):
+        # browsers still open these links, so an attacker must not be able to hide them
+        html = ('<a href="http://evil.example/login">Log in<a href="https://kapitalbank.az/privacy">Privacy</a>'
+                '<p><a href="http://203.0.113.9/x">no closing tag')
+        links, _ = checks.extract_links("", html)
+        urls = [link["url"] for link in links]
+        self.assertEqual(urls, ["http://evil.example/login", "https://kapitalbank.az/privacy", "http://203.0.113.9/x"])
+        self.assertEqual(links[0]["text"], "Log in")
+
+    def test_broken_url_does_not_crash(self):
+        links, _ = checks.extract_links("visit http://[203.0.113.5/login now", "")
+        self.assertEqual(checks.check_links(links, TRUSTED), [])
+        self.assertNotIn("203.0.113.5", checks.defang(links[0]["url"]))
+
     def test_ip_shortener_punycode_and_at_trick(self):
         links = [
             {"url": "http://203.0.113.5/login", "text": ""},
@@ -135,8 +159,67 @@ class TestSamples(unittest.TestCase):
             self.assertEqual(report["verdict"], verdict, name)
 
 
+class TestIocs(unittest.TestCase):
+    def test_trusted_link_domain_is_not_an_ioc(self):
+        # scammers link to the real site too; it must not end up on a blocklist
+        mail = (b"From: Bank <support@evil.example>\nSubject: test\nContent-Type: text/html\n\n"
+                b'<a href="https://kapitalbank.az/privacy">Privacy</a> <a href="http://evil.example/login">Login</a>')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mail.eml")
+            with open(path, "wb") as f:
+                f.write(mail)
+            report = phish_analyzer.analyze(path, [], TRUSTED)
+        self.assertEqual(report["iocs"]["domain"], ["evil[.]example"])
+        self.assertEqual(report["iocs"]["url"], ["hxxp://evil[.]example/login"])
+
+    def test_broken_url_in_a_mail(self):
+        mail = b"From: a@b.example\nSubject: test\n\nclick http://[203.0.113.5/login\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mail.eml")
+            with open(path, "wb") as f:
+                f.write(mail)
+            report = phish_analyzer.analyze(path, [], TRUSTED)  # must not raise
+        self.assertEqual(len(report["links"]), 1)
+
+
 class TestVirusTotal(unittest.TestCase):
     # no real network here, urlopen is replaced with a fake answer
+    def setUp(self):
+        virustotal._last_lookup = None
+        virustotal._cache.clear()
+
+    @staticmethod
+    def fake_answer(*args, **kwargs):
+        answer = {"data": {"attributes": {"last_analysis_stats": {"malicious": 1, "undetected": 60}}}}
+        return io.BytesIO(json.dumps(answer).encode())
+
+    def test_waits_between_lookups(self):
+        # second lookup 3 s after the first one -> wait the remaining 12 s
+        with mock.patch("urllib.request.urlopen", side_effect=self.fake_answer), \
+                mock.patch("virustotal.time.monotonic", side_effect=[100.0, 103.0, 115.0]), \
+                mock.patch("virustotal.time.sleep") as sleep:
+            virustotal.lookup_hash("aa" * 32, "key")
+            virustotal.lookup_hash("bb" * 32, "key")
+        sleep.assert_called_once_with(12.0)
+
+    def test_same_file_is_looked_up_once(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self.fake_answer) as urlopen, \
+                mock.patch("virustotal.time.sleep"):
+            first = virustotal.lookup_hash("aa" * 32, "key")
+            second = virustotal.lookup_hash("aa" * 32, "key")
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(first, second)
+
+    def test_wait_also_between_emails(self):
+        # before, the 15 s pause only happened between attachments of the same email
+        keywords = checks.load_list(phish_analyzer.KEYWORDS_FILE)
+        trusted = set(checks.load_list(phish_analyzer.TRUSTED_FILE))
+        with mock.patch("urllib.request.urlopen", side_effect=self.fake_answer), \
+                mock.patch("virustotal.time.sleep") as sleep:
+            for name in ("phishing_bank.eml", "suspicious_invoice.eml"):
+                phish_analyzer.analyze(os.path.join(ROOT, "samples", name), keywords, trusted, vt_key="key")
+        self.assertEqual(sleep.call_count, 1)
+
     def test_found(self):
         answer = {"data": {"attributes": {"last_analysis_stats": {"malicious": 3, "suspicious": 1, "undetected": 60}}}}
         fake = io.BytesIO(json.dumps(answer).encode())

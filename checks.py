@@ -57,6 +57,15 @@ DOCUMENT_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".jpg", ".jpeg
 # for these an "MZ" header is normal
 PROGRAM_EXT = {".exe", ".dll", ".scr", ".com", ".sys", ".cpl", ".ocx"}
 
+# link text like "Report.pdf" is a file name, not a domain (see host_in_text)
+FILE_WORDS = {
+    "pdf", "html", "htm", "shtml", "txt", "csv", "rtf", "xml", "json",
+    "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "odt", "ods",
+    "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp",
+    "zip", "rar", "gz", "tar", "iso", "img", "exe", "msi", "apk",
+    "php", "asp", "aspx", "jsp", "eml", "ics", "mp3", "mp4", "mov", "avi", "wav",
+}
+
 # tricks people use to fake a domain: n0vabank -> novabank, rnicrosoft -> microsoft
 SWAPS = [("rn", "m"), ("vv", "w"), ("0", "o"), ("1", "l"), ("3", "e"), ("5", "s")]
 
@@ -142,10 +151,22 @@ def unswap(label):
     return label
 
 
+def split_url(url):
+    # urlsplit() raises ValueError on things like "http://[broken" (a bad IPv6
+    # address in brackets). A crafted email must not crash the whole run, so
+    # callers get None and skip the checks that need the parts.
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
+
+
 def defang(url):
     # hxxp://evil[.]example/... can be pasted into a chat or a ticket
     # without turning into a clickable link
-    parts = urlsplit(url)
+    parts = split_url(url)
+    if parts is None:
+        return url.replace("http", "hxxp", 1).replace(".", "[.]")
     if not parts.netloc:
         return url
     scheme = parts.scheme.replace("http", "hxxp")
@@ -285,19 +306,31 @@ class LinkCollector(HTMLParser):
         self.link_text = []
         self.skip = False  # inside <style> or <script>
 
+    def save_link(self):
+        if self.href is not None:
+            self.links.append((self.href.strip(), "".join(self.link_text).strip()))
+            self.href = None
+            self.link_text = []
+
     def handle_starttag(self, tag, attrs):
         if tag in ("style", "script"):
             self.skip = True
         elif tag == "a":
+            # A browser closes an open <a> when the next one starts, so a link
+            # without </a> still works. Save it, or an attacker could hide it.
+            self.save_link()
             self.href = dict(attrs).get("href")
             self.link_text = []
 
     def handle_endtag(self, tag):
         if tag in ("style", "script"):
             self.skip = False
-        elif tag == "a" and self.href is not None:
-            self.links.append((self.href.strip(), "".join(self.link_text).strip()))
-            self.href = None
+        elif tag == "a":
+            self.save_link()
+
+    def close(self):
+        super().close()
+        self.save_link()  # the last <a> may never be closed either
 
     def handle_data(self, data):
         if self.skip:
@@ -333,6 +366,7 @@ def extract_links(plain, html):
     collector = LinkCollector()
     if html:
         collector.feed(html)
+        collector.close()
     for href, text in collector.links:
         if href.lower().startswith(("http://", "https://")):
             links.append({"url": href, "text": text})
@@ -347,8 +381,15 @@ def host_in_text(text):
     # if the visible link text looks like an address, return its domain:
     # "https://novabank.example/hesabim" -> "novabank.example", "Click here" -> None
     text = text.strip().lower()
-    match = re.match(r"^(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/:?#]|$)", text)
-    return match.group(1) if match else None
+    match = re.match(r"^(https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})([/:?#]|$)", text)
+    if not match:
+        return None
+    scheme, host, after = match.groups()
+    # "Report.pdf" or "index.html" is a file name the reader sees, not an address.
+    # Only a bare name.ext counts as a file: with http://, www. or a path it's a site.
+    if not scheme and not after and host.count(".") == 1 and host.rsplit(".", 1)[1] in FILE_WORDS:
+        return None
+    return host
 
 
 def check_links(links, trusted):
@@ -357,7 +398,9 @@ def check_links(links, trusted):
     plain_http = False
     for link in links:
         url = link["url"]
-        parts = urlsplit(url)
+        parts = split_url(url)
+        if parts is None:
+            continue  # broken URL (e.g. "http://[x"), no host to check
         host = (parts.hostname or "").lower()
         if not host:
             continue

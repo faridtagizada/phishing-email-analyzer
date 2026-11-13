@@ -34,7 +34,7 @@ Scam emails here in Azerbaijan are often written in Azerbaijani ("your card is b
 - pressure and bait words in Azerbaijani and English (`data/keywords.txt`)
 - fake `RE:` subjects that aren't really replies
 
-At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. It can also save everything as JSON.
+At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. Links to the real domains in `data/trusted_domains.txt` are left out of the IOCs, so the real bank's site never ends up on a blocklist. It can also save everything as JSON.
 
 ## How to run it
 
@@ -172,7 +172,7 @@ With `--vt` the tool looks up the SHA256 of every attachment on VirusTotal. **On
    ```
 3. Run `python phish_analyzer.py mail.eml --vt`
 
-The free API allows 4 lookups per minute, so with several attachments the tool waits 15 seconds between them.
+The free API allows 4 lookups per minute, so the tool keeps at least 15 seconds between two lookups, also when you check several emails in one run, and it looks up the same file only once.
 
 ## Tests
 
@@ -188,6 +188,7 @@ The VirusTotal tests don't use the internet, they fake the answer with `unittest
 - **`Authentication-Results` can be faked.** A sender can put their own header with `spf=pass` into the mail. Only the one your own mail server adds (the top one) counts, so the tool reads only that one.
 - **Passing SPF/DKIM/DMARC doesn't mean the mail is safe.** In `suspicious_invoice.eml` all three pass, because the scammer set them up for their own domain. They only prove the mail really comes from that domain, not that the domain is honest.
 - **Python and the Azerbaijani "İ".** `"İ".lower()` gives `i` plus an invisible combining dot (2 characters), and `"I".lower()` gives `i` instead of `ı`. So without a fix, `HESABINIZ` wouldn't match `hesabınız` in the keyword list. `normalize()` in `checks.py` turns every i-like letter into a plain `i` on both sides before comparing.
+- **Browsers forgive broken HTML.** `<a href="http://evil.example">Log in` without `</a>` is still a working link, and so is one that a second `<a>` cuts short. The parser saves a link when the next `<a>` starts or the HTML ends, otherwise an attacker could hide it.
 - **The text of a link means nothing.** `<a href="http://evil.example">https://mybank.az</a>` shows the bank's address but goes somewhere else. That's why the tool compares the two.
 - **Windows hides known extensions by default**, so `Hesab_melumati.pdf.exe` shows up as `Hesab_melumati.pdf`. That's why double extensions are such an old trick.
 
