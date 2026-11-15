@@ -22,11 +22,12 @@ Scam emails here in Azerbaijan are often written in Azerbaijani ("your card is b
 **Links**
 - link text that shows one site but really goes to another
 - look-alike domains (`n0vabank` vs `novabank`, `rnicrosoft` vs `microsoft`, `paypa1` vs `paypal`), compared to a list of real domains in `data/trusted_domains.txt`
-- links to raw IP addresses, URL shorteners, punycode domains, cheap TLDs, the `@` trick, plain http
+- domains written with look-alike letters from another alphabet (`раураl.com` with Cyrillic letters is not `paypal.com`), and the same name as a trusted domain with another ending (`paypal.co`, `kapitalbank.com`)
+- links to raw IP addresses (also written as one number, like `http://3232235777/`), URL shorteners, punycode domains, cheap TLDs, the `@` trick, plain http
 
 **Attachments**
-- files that can run code (`.exe`, `.js`, `.vbs`, `.lnk` ...) and double extensions like `.pdf.exe`
-- HTML/SVG attachments, archives and Office files with macros
+- files that can run code (`.exe`, `.js`, `.vbs`, `.lnk`, `.xll`, `.chm`, `.url`, `.msix` ...) and double extensions like `.pdf.exe`, also with a trailing dot (`.pdf.exe.`, which Windows saves as `.exe`)
+- HTML/SVG attachments, archives and disk images (`.iso`, `.vhd`), Office files with macros (`.docm`, `.xlsb` ...) and OneNote files
 - the first bytes of the file: if it starts with `MZ` it's a Windows program, whatever the name says
 - SHA256 of every attachment, plus an optional VirusTotal lookup
 
@@ -34,7 +35,7 @@ Scam emails here in Azerbaijan are often written in Azerbaijani ("your card is b
 - pressure and bait words in Azerbaijani and English (`data/keywords.txt`)
 - fake `RE:` subjects that aren't really replies
 
-At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. It can also save everything as JSON.
+At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. Links to the trusted domains themselves are left out (scammers link to the real bank too, and a blocklist must not block it). It can also save everything as JSON.
 
 ## How to run it
 
@@ -44,20 +45,31 @@ cd phishing-email-analyzer
 python phish_analyzer.py samples/phishing_bank.eml
 ```
 
-Needs Python 3.8 or newer (use `python3` on Linux).
+Needs Python 3.9 or newer (use `python3` on Linux and macOS, where `./phish_analyzer.py` works too).
 
 ```bash
 python phish_analyzer.py samples/*.eml                # several files + a summary
-python phish_analyzer.py mail.eml --json report.json  # save the result as JSON
+python phish_analyzer.py mail.eml --json report.json  # save the result as JSON (always a list, one item per file; missing folders are created)
+python phish_analyzer.py mail.eml --authserv-id mx.example.com   # only trust your own server's Authentication-Results
 python phish_analyzer.py mail.eml --no-color          # plain text output
+python phish_analyzer.py samples/*.eml --fail-on high # exit code 3 if a mail is HIGH (for scripts)
 ```
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Every file was analyzed |
+| 1 | A file could not be read or analyzed, or the JSON file could not be written. The other files are still processed, so one broken mail doesn't stop a batch |
+| 2 | Bad command-line arguments |
+| 3 | `--fail-on medium` or `--fail-on high`: a mail got that verdict or a higher one |
 
 To check one of your own emails you need it as an `.eml` file:
 - **Gmail:** open the mail, then ⋮ → *Download message*
 - **Thunderbird:** File → Save As → File
 - Outlook desktop saves `.msg` files, which this tool can't read yet
 
-Put real emails in a `private/` folder. It's in `.gitignore`, so they never end up on GitHub by accident.
+Put real emails in a `private/` folder. It's in `.gitignore`, so they never end up on GitHub by accident. The same goes for JSON reports in `reports/` or in the project folder itself.
 
 ## Example
 
@@ -139,16 +151,17 @@ Every finding adds points:
 | SPF / DKIM / DMARC = softfail, neutral or none | +1 each |
 | Display name is a fake email address | +3 |
 | Link text shows a different site than the real link | +3 |
-| Look-alike of a trusted domain (swapped letters, 1-2 letters off) | +3 |
+| Look-alike of a trusted domain (swapped letters, 1-2 letters off, letters from another alphabet) | +3 |
 | Attachment that can run code | +3 |
 | File starts with `MZ` but isn't named like a program | +3 |
 | Official sounding name from a free mailbox | +2 |
 | Name mentions a known brand but the address doesn't | +2 |
 | Reply-To on another domain | +2 |
 | Trusted brand name inside another domain | +2 |
-| Link to an IP address, punycode domain, `@` trick | +2 each |
+| Same name as a trusted domain with another ending (`paypal.co`) | +2 |
+| Link to an IP address, punycode or non-Latin domain, `@` trick | +2 each |
 | Double extension (`.pdf.exe`) | +2 extra |
-| HTML/SVG attachment, Office file with macros | +2 |
+| HTML/SVG attachment, Office file with macros, OneNote file | +2 |
 | Return-Path or Message-ID from another domain | +1 each |
 | Shortener, cheap TLD, very long domain, plain http | +1 each |
 | Archive or disk image attachment | +1 |
@@ -172,20 +185,20 @@ With `--vt` the tool looks up the SHA256 of every attachment on VirusTotal. **On
    ```
 3. Run `python phish_analyzer.py mail.eml --vt`
 
-The free API allows 4 lookups per minute, so with several attachments the tool waits 15 seconds between them.
+The free API allows 4 lookups per minute, so the tool waits 15 seconds between two lookups, also from one mail to the next when several files are checked. A file attached to several mails is only looked up once.
 
 ## Tests
 
 ```bash
-python -m unittest discover tests -v
+python -m unittest discover tests -v     # 46 tests
 ```
 
 The VirusTotal tests don't use the internet, they fake the answer with `unittest.mock`.
 
 ## Things I learned along the way
 
-- **`Received` headers are upside down.** Every server adds its line on top, so the *last* `Received` header is where the mail actually started.
-- **`Authentication-Results` can be faked.** A sender can put their own header with `spf=pass` into the mail. Only the one your own mail server adds (the top one) counts, so the tool reads only that one.
+- **`Received` headers are upside down.** Every server adds its line on top, so the *last* `Received` header is where the mail actually started. But the sender can write fake lines below the real ones, so only the top lines, written by the receiving side, can be trusted.
+- **`Authentication-Results` can be faked.** A sender can put their own header with `spf=pass` into the mail. Only the one your own mail server adds (the top one) counts, so the tool reads only that one. If your server doesn't add one at all, the top header is the sender's: pass `--authserv-id` with the name your server writes at the start of the header, and every other header is ignored.
 - **Passing SPF/DKIM/DMARC doesn't mean the mail is safe.** In `suspicious_invoice.eml` all three pass, because the scammer set them up for their own domain. They only prove the mail really comes from that domain, not that the domain is honest.
 - **Python and the Azerbaijani "İ".** `"İ".lower()` gives `i` plus an invisible combining dot (2 characters), and `"I".lower()` gives `i` instead of `ı`. So without a fix, `HESABINIZ` wouldn't match `hesabınız` in the keyword list. `normalize()` in `checks.py` turns every i-like letter into a plain `i` on both sides before comparing.
 - **The text of a link means nothing.** `<a href="http://evil.example">https://mybank.az</a>` shows the bank's address but goes somewhere else. That's why the tool compares the two.
@@ -194,10 +207,11 @@ The VirusTotal tests don't use the internet, they fake the answer with `unittest
 ## Limitations
 
 - The base domain is a guess (`mail.bank.az` → `bank.az`). Real tools use the Public Suffix List.
-- The look-alike check only knows the domains in `trusted_domains.txt`, and it can give false alarms for real brands with similar names.
+- The look-alike check only knows the domains in `trusted_domains.txt`. It can give false alarms for real brands with similar names, and for a brand's real domain under another ending until that domain is added to the list.
 - It doesn't open links or check their reputation, on purpose. Only attachment hashes go to VirusTotal.
 - It can't read `.msg` (Outlook) files or text inside images (QR code phishing).
 - An attacker can simply avoid the words in my keyword list.
+- The IP in the IOC list is the address the receiving side saw itself: the highest `Received` line where the mail goes from one organization to another (e.g. `mx.google.com` taking it from `mail.evil.example`). Lines below that can be faked by the sender, so they only show up in the route. If a provider's own servers don't share a domain name, it can still pick one of them; the route shows every hop.
 - It's a learning project, not a replacement for a real mail gateway or a SOC analyst.
 
 ## Ideas for later

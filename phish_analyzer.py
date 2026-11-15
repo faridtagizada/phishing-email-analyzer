@@ -7,6 +7,10 @@ how "phishy" it is.
     python phish_analyzer.py samples/*.eml
     python phish_analyzer.py mail.eml --json report.json
     python phish_analyzer.py mail.eml --vt       (needs VT_API_KEY, see README)
+    python phish_analyzer.py mail.eml --authserv-id mx.example.com
+
+Exit codes: 0 = every file was analyzed, 1 = a file could not be read or analyzed (or the JSON
+file could not be written), 2 = bad command-line arguments, 3 = --fail-on: a mail reached that verdict.
 
 Only uses the Python standard library.
 """
@@ -16,18 +20,20 @@ import glob
 import json
 import os
 import sys
-import time
 from email import policy
 from email.parser import BytesParser
 from email.utils import parseaddr
-from urllib.parse import urlsplit
 
 import checks
 import virustotal
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# realpath: started through a symlink (e.g. ~/bin/phish_analyzer.py) the data folder is still found
+HERE = os.path.dirname(os.path.realpath(__file__))
 KEYWORDS_FILE = os.path.join(HERE, "data", "keywords.txt")
 TRUSTED_FILE = os.path.join(HERE, "data", "trusted_domains.txt")
+
+VERDICTS = ["LOW", "MEDIUM", "HIGH"]
+EXIT_VERDICT = 3    # 1 is "a file failed" and 2 is argparse's code for bad arguments
 
 COLORS = {
     "red": "\033[91m", "yellow": "\033[93m", "green": "\033[92m",
@@ -44,7 +50,15 @@ def verdict(score):
     return "LOW", "Nothing big found (that doesn't mean it's 100% safe)."
 
 
-def analyze(path, keywords, trusted, vt_key=None):
+def clean(text):
+    # Everything printed from the mail (subject, names, link texts, file names) is written by
+    # the sender. Escape codes and other control characters could wipe the screen or paint a
+    # fake "Score: 0 -> LOW" line, so they are shown as \x1b, \n ... instead of being sent
+    # to the terminal.
+    return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in str(text))
+
+
+def analyze(path, keywords, trusted, vt_key=None, authserv_id=None):
     with open(path, "rb") as f:
         msg = BytesParser(policy=policy.default).parse(f)
 
@@ -58,7 +72,7 @@ def analyze(path, keywords, trusted, vt_key=None):
     findings = []
 
     # 1. headers
-    report["auth"], auth_findings = checks.check_auth(msg)
+    report["auth"], auth_findings = checks.check_auth(msg, authserv_id)
     findings += auth_findings
     findings += checks.check_sender(msg, trusted)
     for header in ("From", "Reply-To", "Return-Path"):
@@ -77,13 +91,13 @@ def analyze(path, keywords, trusted, vt_key=None):
     files = checks.get_attachments(msg)
     findings += checks.check_attachments(files)
     if vt_key:
-        for i, f in enumerate(files):
-            if i > 0:
-                time.sleep(15)  # free API: 4 requests per minute
+        for f in files:
+            # lookup_hash keeps the pause the free API needs, also between two mails
             f["virustotal"] = virustotal.lookup_hash(f["sha256"], vt_key)
             vt = f["virustotal"]
             if vt["status"] == "found" and vt["malicious"] > 0:
-                findings.append(checks.finding(5, "attachments", f"VirusTotal: {vt['malicious']} of {vt['total']} engines say {f['name']} is malicious"))
+                findings.append(checks.finding(5, "attachments", f"VirusTotal: {vt['malicious']} of {vt['total']} "
+                                                                 f"engines say {f['name']} is malicious"))
     for f in files:
         del f["data"]  # raw bytes don't belong in the report
     report["attachments"] = files
@@ -101,11 +115,11 @@ def analyze(path, keywords, trusted, vt_key=None):
     report["findings"] = unique
     report["score"] = sum(item["points"] for item in unique)
     report["verdict"], report["advice"] = verdict(report["score"])
-    report["iocs"] = collect_iocs(report)
+    report["iocs"] = collect_iocs(report, trusted)
     return report
 
 
-def collect_iocs(report):
+def collect_iocs(report, trusted=()):
     # everything an analyst would copy into a ticket, defanged
     iocs = {"email": [], "ip": [], "domain": [], "url": [], "sha256": []}
 
@@ -117,12 +131,20 @@ def collect_iocs(report):
         _, address = parseaddr(report[header])
         if "@" in address:
             add("email", address.replace("@", "[@]").replace(".", "[.]"))
-    if report["route"] and report["route"][0]["ip"]:
-        add("ip", report["route"][0]["ip"].replace(".", "[.]"))  # first server = where it came from
+    # The address the receiving side saw itself, not the lowest Received line: the sender can
+    # write fake lines below the real ones (see checks.sending_server_ip)
+    sender_ip = checks.sending_server_ip(report["route"])
+    if sender_ip:
+        add("ip", checks.defang_ip(sender_ip))
     for link in report["links"]:
-        host = (urlsplit(link["url"]).hostname or "").lower()
+        parts = checks.safe_split(link["url"])
+        host = ((parts.hostname if parts else "") or "").lower()
+        # Scammers link to the real bank's site too, to look genuine. That site is not an IOC:
+        # putting it on a blocklist would block the real bank.
+        if host and checks.base_domain(host) in trusted:
+            continue
         if checks.is_ip(host):
-            add("ip", host.replace(".", "[.]"))
+            add("ip", checks.defang_ip(host))
         elif host:
             add("domain", host.replace(".", "[.]"))
         add("url", checks.defang(link["url"]))
@@ -137,43 +159,42 @@ def print_report(report, use_color):
 
     line = "=" * 70
     print(line)
-    print(c(" " + os.path.basename(report["file"]), "bold"))
+    print(c(" " + clean(os.path.basename(report["file"])), "bold"))
     print(line)
-    print(f" Subject : {report['subject']}")
-    print(f" From    : {report['from']}")
+    print(f" Subject : {clean(report['subject'])}")
+    print(f" From    : {clean(report['from'])}")
     if report["reply_to"]:
-        print(f" Reply-To: {report['reply_to']}")
-    print(f" Date    : {report['date']}")
+        print(f" Reply-To: {clean(report['reply_to'])}")
+    print(f" Date    : {clean(report['date'])}")
 
     print(c("\n[ SPF / DKIM / DMARC ]", "cyan"))
     for name, result in report["auth"].items():
         color = "green" if result == "pass" else "red" if result in ("fail", "permerror") else "yellow"
-        print(f"  {name.upper():<6} {c(result, color)}")
+        print(f"  {name.upper():<6} {c(clean(result), color)}")
 
     if report["route"]:
         print(c("\n[ Route ] first server at the top", "cyan"))
         for i, hop in enumerate(report["route"], 1):
             ip = f" [{hop['ip']}]" if hop["ip"] else ""
-            print(f"  {i}. {hop['from']}{ip} -> {hop['by']}")
+            print(f"  {i}. {clean(hop['from'])}{ip} -> {clean(hop['by'])}")
 
     print(c("\n[ Links ] defanged", "cyan"))
     if not report["links"]:
         print("  none")
     for link in report["links"]:
-        print(f"  {checks.defang(link['url'])}")
+        print(f"  {clean(checks.defang(link['url']))}")
         text = link["text"]
         if text and text != link["url"]:
-            shown = checks.defang(text) if text.lower().startswith("http") else text
-            print(f"     text on screen: {shown}")
+            print(f"     text on screen: {clean(checks.defang_text(text))}")
 
     print(c("\n[ Attachments ]", "cyan"))
     if not report["attachments"]:
         print("  none")
     for f in report["attachments"]:
-        print(f"  {f['name']}  ({f['type']}, {f['size']} bytes)")
+        print(f"  {clean(f['name'])}  ({clean(f['type'])}, {f['size']} bytes)")
         print(f"     sha256: {f['sha256']}")
         if "virustotal" in f:
-            print(f"     VirusTotal: {virustotal.describe(f['virustotal'])}")
+            print(f"     VirusTotal: {clean(virustotal.describe(f['virustotal']))}")
 
     print(c("\n[ Findings ]", "cyan"))
     if not report["findings"]:
@@ -184,14 +205,14 @@ def print_report(report, use_color):
             points = c(points, "red")
         elif item["points"] >= 1:
             points = c(points, "yellow")
-        print(f"  {points}  {item['area']:<12} {item['text']}")
+        print(f"  {points}  {item['area']:<12} {clean(item['text'])}")
 
     # IOCs only make sense if the mail is suspicious
     if report["verdict"] != "LOW":
         print(c("\n[ IOCs ] safe to copy into a ticket", "cyan"))
         for kind, values in report["iocs"].items():
             for value in values:
-                print(f"  {kind:<7} {value}")
+                print(f"  {kind:<7} {clean(value)}")
 
     color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "green"}[report["verdict"]]
     filled = min(report["score"], 20)
@@ -202,13 +223,29 @@ def print_report(report, use_color):
     print(line + "\n")
 
 
-def main():
+def expand_paths(patterns):
+    # Windows cmd doesn't expand *.eml by itself, so do it here. A name that exists is taken
+    # as it is: "msg[1].eml" is a file name, not a pattern that happens to match msg1.eml.
+    paths = []
+    for pattern in patterns:
+        if os.path.exists(pattern):
+            paths.append(pattern)
+        else:
+            paths += sorted(glob.glob(pattern)) or [pattern]
+    return paths
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Check .eml files for signs of phishing.")
     parser.add_argument("files", nargs="+", help=".eml file(s) to check")
-    parser.add_argument("--json", metavar="FILE", help="also save the results as JSON")
+    parser.add_argument("--json", metavar="FILE", help="also save the results as JSON (always a list, one item per file)")
     parser.add_argument("--vt", action="store_true", help="look up attachment hashes on VirusTotal (needs VT_API_KEY)")
+    parser.add_argument("--authserv-id", metavar="NAME",
+                        help="only trust Authentication-Results headers written by this server (e.g. mx.example.com)")
     parser.add_argument("--no-color", action="store_true", help="plain output without colors")
-    args = parser.parse_args()
+    parser.add_argument("--fail-on", choices=["medium", "high"],
+                        help=f"exit with code {EXIT_VERDICT} if a mail gets this verdict or a higher one (for scripts)")
+    args = parser.parse_args(argv)
 
     # Windows consoles sometimes can't print letters like "ə", don't crash on that
     if hasattr(sys.stdout, "reconfigure"):
@@ -225,19 +262,20 @@ def main():
     if args.vt:
         vt_key = os.environ.get("VT_API_KEY")
         if not vt_key:
-            print("[!] --vt needs an API key in VT_API_KEY (see README). Skipping VirusTotal.\n")
-
-    # Windows cmd doesn't expand *.eml by itself, so do it here
-    paths = []
-    for pattern in args.files:
-        paths += sorted(glob.glob(pattern)) or [pattern]
+            print("[!] --vt needs an API key in VT_API_KEY (see README). Skipping VirusTotal.\n", file=sys.stderr)
 
     reports = []
-    for path in paths:
+    failed = 0
+    for path in expand_paths(args.files):
         try:
-            report = analyze(path, keywords, trusted, vt_key)
+            report = analyze(path, keywords, trusted, vt_key, args.authserv_id)
         except OSError as e:
-            print(f"[!] Can't read {path}: {e}")
+            print(f"[!] Can't read {path}: {e}", file=sys.stderr)
+            failed += 1
+            continue
+        except Exception as e:  # one mail this tool can't handle must not stop the other files
+            print(f"[!] Could not analyze {path}: {type(e).__name__}: {e}", file=sys.stderr)
+            failed += 1
             continue
         print_report(report, use_color)
         reports.append(report)
@@ -245,14 +283,26 @@ def main():
     if len(reports) > 1:
         print("Summary")
         for report in reports:
-            print(f"  {report['verdict']:<7} {report['score']:>3}  {os.path.basename(report['file'])}")
+            print(f"  {report['verdict']:<7} {report['score']:>3}  {clean(os.path.basename(report['file']))}")
         print()
 
     if args.json and reports:
-        with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(reports if len(reports) > 1 else reports[0], f, ensure_ascii=False, indent=2)
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)   # e.g. reports/today.json
+            with open(args.json, "w", encoding="utf-8") as f:
+                json.dump(reports, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print(f"[!] Can't write {args.json}: {e}", file=sys.stderr)
+            return 1
         print(f"[+] Saved JSON to {args.json}")
+    if failed:
+        return 1
+    if args.fail_on:
+        limit = VERDICTS.index(args.fail_on.upper())
+        if any(VERDICTS.index(report["verdict"]) >= limit for report in reports):
+            return EXIT_VERDICT
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
