@@ -9,7 +9,8 @@ how "phishy" it is.
     python phish_analyzer.py mail.eml --vt       (needs VT_API_KEY, see README)
     python phish_analyzer.py mail.eml --authserv-id mx.example.com
 
-Exit code: 0 = every file was analyzed, 1 = at least one file could not be read or analyzed.
+Exit codes: 0 = every file was analyzed, 1 = a file could not be read or analyzed (or the JSON
+file could not be written), 2 = bad command-line arguments, 3 = --fail-on: a mail reached that verdict.
 
 Only uses the Python standard library.
 """
@@ -26,9 +27,13 @@ from email.utils import parseaddr
 import checks
 import virustotal
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# realpath: started through a symlink (e.g. ~/bin/phish_analyzer.py) the data folder is still found
+HERE = os.path.dirname(os.path.realpath(__file__))
 KEYWORDS_FILE = os.path.join(HERE, "data", "keywords.txt")
 TRUSTED_FILE = os.path.join(HERE, "data", "trusted_domains.txt")
+
+VERDICTS = ["LOW", "MEDIUM", "HIGH"]
+EXIT_VERDICT = 3    # 1 is "a file failed" and 2 is argparse's code for bad arguments
 
 COLORS = {
     "red": "\033[91m", "yellow": "\033[93m", "green": "\033[92m",
@@ -91,7 +96,8 @@ def analyze(path, keywords, trusted, vt_key=None, authserv_id=None):
             f["virustotal"] = virustotal.lookup_hash(f["sha256"], vt_key)
             vt = f["virustotal"]
             if vt["status"] == "found" and vt["malicious"] > 0:
-                findings.append(checks.finding(5, "attachments", f"VirusTotal: {vt['malicious']} of {vt['total']} engines say {f['name']} is malicious"))
+                findings.append(checks.finding(5, "attachments", f"VirusTotal: {vt['malicious']} of {vt['total']} "
+                                                                 f"engines say {f['name']} is malicious"))
     for f in files:
         del f["data"]  # raw bytes don't belong in the report
     report["attachments"] = files
@@ -125,13 +131,11 @@ def collect_iocs(report):
         _, address = parseaddr(report[header])
         if "@" in address:
             add("email", address.replace("@", "[@]").replace(".", "[.]"))
-    # The first server with a public address is where the mail came from (10.x / 192.168.x
-    # hops are somebody's internal network). Keep in mind that the sender can add fake
-    # Received lines below the real ones, so treat this address as a lead, not as proof.
-    for hop in report["route"]:
-        if hop["ip"] and not checks.is_internal_ip(hop["ip"]):
-            add("ip", checks.defang_ip(hop["ip"]))
-            break
+    # The address the receiving side saw itself, not the lowest Received line: the sender can
+    # write fake lines below the real ones (see checks.sending_server_ip)
+    sender_ip = checks.sending_server_ip(report["route"])
+    if sender_ip:
+        add("ip", checks.defang_ip(sender_ip))
     for link in report["links"]:
         parts = checks.safe_split(link["url"])
         host = ((parts.hostname if parts else "") or "").lower()
@@ -177,8 +181,7 @@ def print_report(report, use_color):
         print(f"  {clean(checks.defang(link['url']))}")
         text = link["text"]
         if text and text != link["url"]:
-            shown = checks.defang(text) if text.lower().startswith("http") else text
-            print(f"     text on screen: {clean(shown)}")
+            print(f"     text on screen: {clean(checks.defang_text(text))}")
 
     print(c("\n[ Attachments ]", "cyan"))
     if not report["attachments"]:
@@ -236,6 +239,8 @@ def main(argv=None):
     parser.add_argument("--authserv-id", metavar="NAME",
                         help="only trust Authentication-Results headers written by this server (e.g. mx.example.com)")
     parser.add_argument("--no-color", action="store_true", help="plain output without colors")
+    parser.add_argument("--fail-on", choices=["medium", "high"],
+                        help=f"exit with code {EXIT_VERDICT} if a mail gets this verdict or a higher one (for scripts)")
     args = parser.parse_args(argv)
 
     # Windows consoles sometimes can't print letters like "ə", don't crash on that
@@ -279,13 +284,20 @@ def main(argv=None):
 
     if args.json and reports:
         try:
+            os.makedirs(os.path.dirname(os.path.abspath(args.json)), exist_ok=True)   # e.g. reports/today.json
             with open(args.json, "w", encoding="utf-8") as f:
                 json.dump(reports, f, ensure_ascii=False, indent=2)
         except OSError as e:
             print(f"[!] Can't write {args.json}: {e}", file=sys.stderr)
             return 1
         print(f"[+] Saved JSON to {args.json}")
-    return 1 if failed else 0
+    if failed:
+        return 1
+    if args.fail_on:
+        limit = VERDICTS.index(args.fail_on.upper())
+        if any(VERDICTS.index(report["verdict"]) >= limit for report in reports):
+            return EXIT_VERDICT
+    return 0
 
 
 if __name__ == "__main__":

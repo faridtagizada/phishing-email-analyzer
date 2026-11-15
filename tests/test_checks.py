@@ -276,5 +276,102 @@ class TestAuditFixes(unittest.TestCase):
         clock.sleep.assert_called_once_with(12.0)
 
 
+def parse_mail(raw):
+    return BytesParser(policy=policy.default).parsebytes(raw.encode("utf-8"))
+
+
+def run_main(argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        rc = phish_analyzer.main(argv)
+    return rc, out.getvalue()
+
+
+class TestSecondRound(unittest.TestCase):
+    # the audit findings the first round of fixes had not covered yet
+
+    def test_homograph_domains(self):
+        links = [{"url": "https://раураl.com/login", "text": ""}]       # Cyrillic р, а, у
+        texts = " | ".join(f["text"] for f in checks.check_links(links, TRUSTED))
+        self.assertIn("not Latin (really xn--", texts)
+        self.assertIn("imitates paypal.com with look-alike letters", texts)
+        found = checks.check_lookalike("xn--80aa0cbo65f.com", TRUSTED)  # the same trick, written as punycode
+        self.assertEqual(found["points"], 3)
+        self.assertIsNone(checks.check_lookalike("bücher.example", TRUSTED))   # a normal IDN that copies nothing
+
+    def test_same_name_with_another_ending(self):
+        self.assertEqual(checks.check_lookalike("paypal.co", TRUSTED)["points"], 2)
+        self.assertIn("same name as kapitalbank.az", checks.check_lookalike("kapitalbank.com", TRUSTED)["text"])
+        self.assertIsNone(checks.check_lookalike("online.kapitalbank.az", TRUSTED))
+        trusted = {domain.lower() for domain in checks.load_list(phish_analyzer.TRUSTED_FILE)}
+        self.assertIsNone(checks.check_lookalike("amazon.co.uk", trusted))      # listed as a real second domain
+
+    def test_file_name_is_not_a_domain(self):
+        self.assertIsNone(checks.host_in_text("Q3-report.pdf"))
+        self.assertIsNone(checks.host_in_text("invoice.zip"))
+        self.assertEqual(checks.host_in_text("https://invoice.zip"), "invoice.zip")
+        links = [{"url": "https://files.example/q3.pdf", "text": "Q3-report.pdf"}]
+        self.assertEqual(checks.check_links(links, TRUSTED), [])
+
+    def test_link_text_is_always_defanged(self):
+        self.assertEqual(checks.defang_text("novabank.example/login"), "novabank[.]example/login")
+        self.assertEqual(checks.defang_text("Visit https://bank.example"), "Visit hxxps://bank[.]example")
+        self.assertEqual(checks.defang_text("Click here"), "Click here")
+        mail = ('From: a@b.example\nSubject: hi\nContent-Type: text/html\n\n'
+                '<a href="http://evil.example/x">novabank.example/login</a>')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "m.eml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(mail)
+            _, out = run_main([path, "--no-color"])
+        self.assertIn("text on screen: novabank[.]example/login", out)
+        self.assertNotIn("novabank.example/login", out)
+
+    def test_ioc_ip_is_the_one_the_receiving_side_saw(self):
+        msg = parse_mail(
+            "Received: from mx.mycompany.example (mx.mycompany.example [192.0.2.10]) by inbox.mycompany.example\n"
+            "Received: from mail.evil.example (mail.evil.example [203.0.113.7]) by mx.mycompany.example\n"
+            "Received: from trusted.bank.example (trusted.bank.example [198.51.100.99]) by mail.evil.example\n"
+            "From: a@b.example\n\nhi")
+        self.assertEqual(checks.sending_server_ip(checks.parse_received(msg)), "203.0.113.7")   # not the forged line
+        msg = parse_mail(   # Microsoft 365: "(address)" without brackets, internal hops with public IPv6 addresses
+            "Received: from AM6PR04MB1.eurprd04.prod.outlook.com (2603:10a6:20b:1::1) by"
+            " AM9PR04MB2.eurprd04.prod.outlook.com (2603:10a6:20b:2::2) with HTTPS\n"
+            "Received: from mail.evil.example (203.0.113.8) by DB5EUR03FT012.mail.protection.outlook.com"
+            " (10.152.20.80) with Microsoft SMTP Server\n"
+            "From: a@b.example\n\nhi")
+        hops = checks.parse_received(msg)
+        self.assertEqual(hops[0]["ip"], "203.0.113.8")          # the sender's address, not the receiver's
+        self.assertEqual(checks.sending_server_ip(hops), "203.0.113.8")
+
+    def test_more_dangerous_file_types(self):
+        def points(name, data=b"x"):
+            return [f["points"] for f in checks.check_attachments([{"name": name, "data": data}])]
+        self.assertEqual(points("addin.xll", b"MZ\x90"), [3])     # a DLL by design: not counted twice
+        for name in ("help.chm", "link.url", "setup.msix", "setup.appx"):
+            self.assertEqual(points(name), [3], name)
+        self.assertEqual(points("notes.one"), [2])
+        self.assertEqual(points("data.xlsb"), [2])
+        self.assertEqual(points("disk.vhdx"), [1])
+
+    def test_fail_on_exit_code_and_json_folder(self):
+        bad = os.path.join(ROOT, "samples", "phishing_bank.eml")
+        good = os.path.join(ROOT, "samples", "legit_newsletter.eml")
+        self.assertEqual(run_main([bad, "--no-color", "--fail-on", "high"])[0], 3)
+        self.assertEqual(run_main([good, "--no-color", "--fail-on", "medium"])[0], 0)
+        self.assertEqual(run_main([bad, "--no-color"])[0], 0)          # without --fail-on the verdict doesn't count
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as bad_argument:
+            phish_analyzer.main([good, "--fail-on", "low"])
+        self.assertEqual(bad_argument.exception.code, 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "reports", "today.json")
+            self.assertEqual(run_main([good, "--no-color", "--json", out])[0], 0)
+            self.assertTrue(os.path.exists(out))
+
+    @unittest.skipIf(os.name == "nt", "Windows has no executable bit")
+    def test_script_can_be_started_directly(self):
+        self.assertTrue(os.access(os.path.join(ROOT, "phish_analyzer.py"), os.X_OK))
+
+
 if __name__ == "__main__":
     unittest.main()

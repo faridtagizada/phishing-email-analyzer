@@ -6,4 +6,6 @@ venv/
 # real emails and reports I check - these must never go to GitHub
 private/
 reports/
-*.json
+# a JSON report saved in the project folder itself (--json report.json); JSON files in
+# subfolders (test data, settings) are still committed
+/*.json

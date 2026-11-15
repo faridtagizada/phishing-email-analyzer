@@ -53,13 +53,31 @@ DANGEROUS_EXT = {
     ".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".js", ".jse", ".vbs",
     ".vbe", ".wsf", ".hta", ".ps1", ".lnk", ".msi", ".jar", ".cpl", ".reg",
     ".dll", ".sys", ".ocx",
+    # an Excel add-in (a DLL Excel loads), compiled HTML help, an internet shortcut that can start
+    # a program from another server, and app installers
+    ".xll", ".chm", ".url", ".appx", ".appxbundle", ".msix", ".msixbundle", ".application",
 }
-MACRO_EXT = {".docm", ".xlsm", ".pptm", ".dotm", ".xlam"}
+MACRO_EXT = {".docm", ".xlsm", ".xlsb", ".pptm", ".dotm", ".xltm", ".xlam", ".potm", ".ppsm", ".sldm"}
+# OneNote files were used to hide a script behind a fake "click to open" button
+ONENOTE_EXT = {".one", ".onepkg"}
 WEBPAGE_EXT = {".html", ".htm", ".shtml", ".svg"}
-ARCHIVE_EXT = {".zip", ".rar", ".7z", ".iso", ".img", ".gz", ".cab"}
+ARCHIVE_EXT = {".zip", ".rar", ".7z", ".iso", ".img", ".vhd", ".vhdx", ".gz", ".cab"}
 DOCUMENT_EXT = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".jpg", ".jpeg", ".png"}
 # for these an "MZ" header is normal
-PROGRAM_EXT = {".exe", ".dll", ".scr", ".com", ".sys", ".cpl", ".ocx"}
+PROGRAM_EXT = {".exe", ".dll", ".scr", ".com", ".sys", ".cpl", ".ocx", ".xll"}
+
+# Link text like "Q3-report.pdf" is a file name, not a web address. ("com" is left out: it is
+# the most common real ending. .zip and .mov are real endings too, but without http:// or www.
+# in front they are read as file names here.)
+FILE_ENDINGS = {ext[1:] for ext in DANGEROUS_EXT | MACRO_EXT | ONENOTE_EXT | WEBPAGE_EXT | ARCHIVE_EXT
+                | DOCUMENT_EXT | {".ppt", ".pptx", ".csv", ".rtf", ".odt", ".gif", ".mp3", ".mp4", ".mov"}} - {"com"}
+
+# Cyrillic, Greek and other letters that look like Latin lowercase ones: раураl.com is not paypal.com
+CONFUSABLES = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x", "і": "i", "ј": "j", "ѕ": "s",
+    "һ": "h", "ԁ": "d", "ӏ": "l", "ԛ": "q", "ԝ": "w", "ү": "y", "ɡ": "g",
+    "α": "a", "ο": "o", "ρ": "p", "ν": "v", "ι": "i", "υ": "u", "χ": "x",
+})
 
 # tricks people use to fake a domain: n0vabank -> novabank, rnicrosoft -> microsoft
 SWAPS = [("rn", "m"), ("vv", "w"), ("0", "o"), ("1", "l"), ("3", "e"), ("5", "s")]
@@ -209,6 +227,21 @@ def decode_punycode(host):
         return host
 
 
+def encode_punycode(host):
+    # раураl.com -> xn--80aa0cbo65f.com, the form the browser really looks up
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
+def defang_text(text):
+    # The visible text of a link can be an address as well ("novabank.example/login"), so every
+    # domain in it gets [.] and every http becomes hxxp, the same as the links themselves.
+    text = re.sub(r"(?i)\bhttp", "hxxp", text)
+    return re.sub(r"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b", lambda m: m.group(0).replace(".", "[.]"), text)
+
+
 # ---------------------------------------------------------------- domains
 
 def contains_brand(name, brand):
@@ -226,6 +259,14 @@ def check_lookalike(host, trusted):
     if not host or is_ip(host):
         return None
     host = host.lower().strip(".")
+    if "xn--" in host:
+        host = decode_punycode(host)
+    # Letters from another alphabet that look Latin: compare what the reader SEES
+    latin = host.translate(CONFUSABLES)
+    if latin != host:
+        if base_domain(latin) in trusted:
+            return finding(3, "domains", f"{host} imitates {base_domain(latin)} with look-alike letters from another alphabet")
+        host = latin
     domain = base_domain(host)
     if domain in trusted:
         return None
@@ -239,7 +280,9 @@ def check_lookalike(host, trusted):
     for real in sorted(trusted):
         real_name = real.split(".")[0]
         if name == real_name:
-            continue  # same name with another ending (.com / .az), can't tell
+            # paypal.co, kapitalbank.com: one of the most common tricks. A real second domain of the
+            # brand (amazon.co.uk) belongs in trusted_domains.txt, then it isn't reported.
+            return finding(2, "domains", f"{domain} has the same name as {real} but another ending")
         if unswap(name) == unswap(real_name):
             return finding(3, "domains", f"{domain} imitates {real} (look-alike characters)")
         # two typos are a lot for a short name (moodle is 2 letters away from google), so those get 1
@@ -285,7 +328,8 @@ def check_auth(msg, authserv_id=None):
         elif result in ("softfail", "neutral", "none"):
             findings.append(finding(1, "auth", f"{label} = {result}: doesn't prove who the sender is"))
     if ignored:
-        findings.append(finding(0, "auth", f"Ignored {ignored} Authentication-Results header(s) not written by {authserv_id}"))
+        findings.append(finding(0, "auth", f"Ignored {ignored} Authentication-Results header(s) "
+                                           f"not written by {authserv_id}"))
     if not headers and (authserv_id or not msg.get("Received-SPF")):
         findings.append(finding(0, "auth", "No Authentication-Results header, can't tell if SPF/DKIM/DMARC passed"))
     return results, findings
@@ -348,19 +392,37 @@ def parse_received(msg):
         text = " ".join(str(header).split())
         sender = re.search(r"\bfrom\s+(\S+)", text)
         receiver = re.search(r"\bby\s+(\S+)", text)
+        # The address of the sending server is in the "from" part, before " by ": "[203.0.113.5]"
+        # (Postfix, Gmail, Exim) or "(203.0.113.5)" (Microsoft 365)
+        from_part = re.search(r"\bfrom\s+(.*?)(?:\s+by\s|;|$)", text)
         ip = ""
-        for candidate in re.findall(r"\[(?:IPv6:)?([0-9A-Fa-f:.]+)\]", text):
+        for candidate in re.findall(r"[\[(](?:IPv6:)?([0-9A-Fa-f:.]+)[\])]", from_part.group(1) if from_part else ""):
             try:
                 ip = str(ipaddress.ip_address(candidate))     # IPv4 or IPv6
                 break
             except ValueError:
                 continue
         hops.append({
-            "from": sender.group(1) if sender else "?",
+            "from": sender.group(1).strip("().[]") if sender else "?",
             "by": receiver.group(1) if receiver else "?",
             "ip": ip,
         })
     return hops
+
+
+def sending_server_ip(hops):
+    # Which address does the mail really come from? The sender can add fake Received lines BELOW
+    # the real ones, but not above them: the top lines are written by the receiving side. So go
+    # from the top down and stop at the first line where the mail crosses from one organization to
+    # another (mx.google.com taking it from mail.evil.example): the address there is what the
+    # receiving server saw itself. Lines inside one organization (outlook.com -> outlook.com) are
+    # skipped. If no such line exists, the highest public address is used.
+    public = [hop for hop in reversed(hops) if hop["ip"] and not is_internal_ip(hop["ip"])]
+    for hop in public:
+        sender_host = hop["from"].lower()
+        if is_ip(sender_host) or sender_host in ("?", "unknown") or base_domain(sender_host) != base_domain(hop["by"]):
+            return hop["ip"]
+    return public[0]["ip"] if public else ""
 
 
 # ------------------------------------------------------------ body + links
@@ -468,6 +530,8 @@ def host_in_text(text):
     # "https://novabank.example/hesabim" -> "novabank.example", "Click here" -> None
     text = text.strip().lower()
     match = re.match(r"^(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(?:[/:?#]|$)", text)
+    if match and match.group(1).rsplit(".", 1)[-1] in FILE_ENDINGS and not text.startswith(("http", "www.")):
+        return None     # "Q3-report.pdf" is a file name, not a site
     if not match:
         # "Visit https://bank.example now": the address is somewhere inside the text
         match = re.search(r"(?:https?://|www\.)((?:[a-z0-9-]+\.)+[a-z]{2,})", text)
@@ -510,7 +574,11 @@ def check_links(links, trusted):
         if base_domain(host) in SHORTENERS:
             findings.append(finding(1, "links", f"Shortened link ({host}) hides where it really goes"))
         if "xn--" in host:
-            findings.append(finding(2, "links", f"Punycode domain {host} is really '{decode_punycode(host)}' (look-alike letters?)"))
+            findings.append(finding(2, "links", f"Punycode domain {host} is really '{decode_punycode(host)}' "
+                                                "(look-alike letters?)"))
+        elif not host.isascii():
+            findings.append(finding(2, "links", f"Domain {host} uses letters that are not Latin "
+                                                f"(really {encode_punycode(host)}): look-alike letters?"))
         if host.rsplit(".", 1)[-1] in CHEAP_TLDS:
             findings.append(finding(1, "links", f"{host} uses a cheap TLD that scammers like"))
         if host.count(".") >= 4:
@@ -556,13 +624,18 @@ def check_attachments(files):
         if ext in DANGEROUS_EXT:
             findings.append(finding(3, "attachments", f"{f['name']}: {ext} files can run code when opened"))
             if ext_before in DOCUMENT_EXT:
-                findings.append(finding(2, "attachments", f"{f['name']}: double extension, Windows hides '{ext}' so it looks like a {ext_before} file"))
+                findings.append(finding(2, "attachments", f"{f['name']}: double extension, Windows hides '{ext}' "
+                                                          f"so it looks like a {ext_before} file"))
         elif ext in MACRO_EXT:
             findings.append(finding(2, "attachments", f"{f['name']}: Office file with macros"))
+        elif ext in ONENOTE_EXT:
+            findings.append(finding(2, "attachments", f"{f['name']}: OneNote file, a known way to hide a script "
+                                                      "behind a fake 'open' button"))
         elif ext in WEBPAGE_EXT:
             findings.append(finding(2, "attachments", f"{f['name']}: HTML/SVG opens in the browser, often a fake login page"))
         elif ext in ARCHIVE_EXT:
-            findings.append(finding(1, "attachments", f"{f['name']}: archive / disk image, often used to sneak files past filters"))
+            findings.append(finding(1, "attachments", f"{f['name']}: archive / disk image, "
+                                                      "often used to sneak files past filters"))
 
         # don't trust the name, look at the first bytes of the file too
         if f["data"][:2] == b"MZ" and ext not in PROGRAM_EXT:

@@ -30,6 +30,13 @@ amazon.com
 netflix.com
 dhl.com
 
+# the same brands under another ending (paypal.co or kapitalbank.com are reported,
+# so the real second domains of a brand have to be listed here)
+paypal.me
+amazon.co.uk
+amazon.de
+google.az
+
 # mail and login domains that really belong to the brands above
 # (without them a normal Facebook notification looks like a look-alike)
 facebookmail.com
