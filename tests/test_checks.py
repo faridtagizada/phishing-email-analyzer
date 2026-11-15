@@ -141,6 +141,7 @@ class TestVirusTotal(unittest.TestCase):
     # no real network here, urlopen is replaced with a fake answer
     def setUp(self):
         virustotal._last_lookup = None      # no pause between the tests
+        virustotal._cache.clear()           # every test asks again
 
     def test_found(self):
         answer = {"data": {"attributes": {"last_analysis_stats": {"malicious": 3, "suspicious": 1, "undetected": 60}}}}
@@ -269,6 +270,7 @@ class TestAuditFixes(unittest.TestCase):
         clock = mock.Mock()
         clock.monotonic.side_effect = [100.0, 100.0, 103.0, 115.0]
         virustotal._last_lookup = None
+        virustotal._cache.clear()
         with mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: io.BytesIO(json.dumps(answer).encode())), \
                 mock.patch.object(virustotal, "time", clock):
             virustotal.lookup_hash("ab" * 32, "key")
@@ -367,6 +369,25 @@ class TestSecondRound(unittest.TestCase):
             out = os.path.join(tmp, "reports", "today.json")
             self.assertEqual(run_main([good, "--no-color", "--json", out])[0], 0)
             self.assertTrue(os.path.exists(out))
+
+    def test_trusted_site_is_not_an_ioc(self):
+        report = {"from": "", "reply_to": "", "route": [], "attachments": [],
+                  "links": [{"url": "https://www.paypal.com/help", "text": ""},
+                            {"url": "http://evil.example/login", "text": ""}]}
+        iocs = phish_analyzer.collect_iocs(report, TRUSTED)
+        self.assertEqual(iocs["domain"], ["evil[.]example"])     # blocking paypal.com would block the real PayPal
+
+    def test_virustotal_looks_up_a_file_once(self):
+        answer = {"data": {"attributes": {"last_analysis_stats": {"malicious": 1, "undetected": 60}}}}
+        virustotal._cache.clear()
+        virustotal._last_lookup = None
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=lambda *a, **k: io.BytesIO(json.dumps(answer).encode())) as urlopen:
+            first = virustotal.lookup_hash("ef" * 32, "key")
+            second = virustotal.lookup_hash("ef" * 32, "key")
+        self.assertEqual(first, second)
+        self.assertEqual(urlopen.call_count, 1)
+        virustotal._cache.clear()
 
     @unittest.skipIf(os.name == "nt", "Windows has no executable bit")
     def test_script_can_be_started_directly(self):

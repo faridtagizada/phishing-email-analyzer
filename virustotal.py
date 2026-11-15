@@ -17,6 +17,7 @@ import urllib.request
 API_URL = "https://www.virustotal.com/api/v3/files/"
 MIN_INTERVAL = 15       # seconds between two lookups, the free API allows 4 per minute
 _last_lookup = None     # when the previous lookup was made (shared by every mail of one run)
+_cache = {}             # the same file attached to several mails is only looked up once
 
 
 def wait_for_turn():
@@ -31,6 +32,15 @@ def wait_for_turn():
 
 def lookup_hash(sha256, api_key, timeout=15):
     # returns e.g. {"status": "found", "malicious": 12, "suspicious": 1, "total": 70}
+    if sha256 in _cache:
+        return dict(_cache[sha256])
+    result = _query(sha256, api_key, timeout)
+    if result["status"] != "error":     # an error (no internet, 429 ...) may work the next time
+        _cache[sha256] = result
+    return dict(result)
+
+
+def _query(sha256, api_key, timeout):
     wait_for_turn()
     request = urllib.request.Request(API_URL + sha256, headers={"x-apikey": api_key})
     try:

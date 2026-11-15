@@ -69,8 +69,10 @@ PROGRAM_EXT = {".exe", ".dll", ".scr", ".com", ".sys", ".cpl", ".ocx", ".xll"}
 # Link text like "Q3-report.pdf" is a file name, not a web address. ("com" is left out: it is
 # the most common real ending. .zip and .mov are real endings too, but without http:// or www.
 # in front they are read as file names here.)
-FILE_ENDINGS = {ext[1:] for ext in DANGEROUS_EXT | MACRO_EXT | ONENOTE_EXT | WEBPAGE_EXT | ARCHIVE_EXT
-                | DOCUMENT_EXT | {".ppt", ".pptx", ".csv", ".rtf", ".odt", ".gif", ".mp3", ".mp4", ".mov"}} - {"com"}
+FILE_ENDINGS = {ext[1:] for ext in DANGEROUS_EXT | MACRO_EXT | ONENOTE_EXT | WEBPAGE_EXT | ARCHIVE_EXT | DOCUMENT_EXT} | {
+    "ppt", "pptx", "csv", "rtf", "odt", "ods", "xml", "json", "gif", "bmp", "webp", "tar", "apk",
+    "php", "asp", "aspx", "jsp", "eml", "ics", "mp3", "mp4", "mov", "avi", "wav",
+} - {"com"}
 
 # Cyrillic, Greek and other letters that look like Latin lowercase ones: раураl.com is not paypal.com
 CONFUSABLES = str.maketrans({

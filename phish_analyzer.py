@@ -115,11 +115,11 @@ def analyze(path, keywords, trusted, vt_key=None, authserv_id=None):
     report["findings"] = unique
     report["score"] = sum(item["points"] for item in unique)
     report["verdict"], report["advice"] = verdict(report["score"])
-    report["iocs"] = collect_iocs(report)
+    report["iocs"] = collect_iocs(report, trusted)
     return report
 
 
-def collect_iocs(report):
+def collect_iocs(report, trusted=()):
     # everything an analyst would copy into a ticket, defanged
     iocs = {"email": [], "ip": [], "domain": [], "url": [], "sha256": []}
 
@@ -139,6 +139,10 @@ def collect_iocs(report):
     for link in report["links"]:
         parts = checks.safe_split(link["url"])
         host = ((parts.hostname if parts else "") or "").lower()
+        # Scammers link to the real bank's site too, to look genuine. That site is not an IOC:
+        # putting it on a blocklist would block the real bank.
+        if host and checks.base_domain(host) in trusted:
+            continue
         if checks.is_ip(host):
             add("ip", checks.defang_ip(host))
         elif host:

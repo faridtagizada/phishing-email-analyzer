@@ -35,7 +35,7 @@ Scam emails here in Azerbaijan are often written in Azerbaijani ("your card is b
 - pressure and bait words in Azerbaijani and English (`data/keywords.txt`)
 - fake `RE:` subjects that aren't really replies
 
-At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. It can also save everything as JSON.
+At the end it lists the IOCs, defanged (`hxxp://evil[.]example`), so you can paste them into a chat or a ticket without creating clickable links. Links to the trusted domains themselves are left out (scammers link to the real bank too, and a blocklist must not block it). It can also save everything as JSON.
 
 ## How to run it
 
@@ -185,12 +185,12 @@ With `--vt` the tool looks up the SHA256 of every attachment on VirusTotal. **On
    ```
 3. Run `python phish_analyzer.py mail.eml --vt`
 
-The free API allows 4 lookups per minute, so with several attachments the tool waits 15 seconds between them.
+The free API allows 4 lookups per minute, so the tool waits 15 seconds between two lookups, also from one mail to the next when several files are checked. A file attached to several mails is only looked up once.
 
 ## Tests
 
 ```bash
-python -m unittest discover tests -v     # 44 tests
+python -m unittest discover tests -v     # 46 tests
 ```
 
 The VirusTotal tests don't use the internet, they fake the answer with `unittest.mock`.
